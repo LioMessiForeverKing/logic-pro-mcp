@@ -63,7 +63,9 @@
       "2026-09-15-the-korean-project-chooser-names-itself",
       "2026-09-15-the-setup-windows-own-menu-installs-the-surface"
     ],
-    "records_from_a_superseded_build": [],
+    "records_from_a_superseded_build": [
+      "2026-09-23-973-en-US-header-mixer-fine-axvalue"
+    ],
     "records_without_evidence": [
       "2026-09-03-sort-settle-witness-accepts-prescroll-order",
       "2026-09-03-sort-tracks-by-track-name-is-inert",
@@ -830,6 +832,13 @@
         "2026-09-15-german-logic-blocks-in-the-new-track-sheet-because-three-labelsets-never-had-a-german-reading"
       ],
       "reason": "Eight records recovered from #882 when its qualification half was held back. Each carries a `reverify.kind: \"manual\"` with a real command, and each is manual for a reason a script cannot reach on somebody else's machine: two need Logic relaunched under a different AppleLanguages (de) or a different keyboard input source, three need a FRESHLY STARTED server or a specific window layout that a test run would have to create by closing the operator's windows, one needs consent for an operation that writes a key command, and two read a menu that must be open. Scripting any of them means shipping a script whose job is to rearrange somebody's session.\n\nThis raise lists EXACTLY the eight this change adds. The control-surface install record that a previous raise named is already in `allowed` and is not being added here -- a raise that keeps naming it pre-authorises a gap nobody is deciding about in this change."
+    },
+    "records_from_a_superseded_build": {
+      "date": "2026-09-24",
+      "members": [
+        "2026-09-23-973-en-US-header-mixer-fine-axvalue"
+      ],
+      "reason": "The #973 fine-phase record was measured on Logic 12.3.1 (6682, en-US), which is NEWER than the 12.3 (6674) that LOGIC-BUILD declares, so this ratchet reads it as another build's record; it is not an obsolete one. The same harness was then run on the declared 12.3 (6674, ko-KR) and every write landed on the whole raw position nearest the request, so the behaviour this record carries is not specific to the newer build. This raise lists exactly the one record this change adds."
     },
     "records_without_evidence": {
       "date": "2026-09-19",
