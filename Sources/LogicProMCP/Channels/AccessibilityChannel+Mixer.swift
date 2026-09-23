@@ -269,16 +269,12 @@ extension AccessibilityChannel {
             current = next
         }
 
-        // #973: a direct AXValue write moves the header slider exactly one raw unit toward the
-        // written value, measured on Logic 12.3.1 for volume and pan in both directions. The loop
-        // above leaves the slider within one detent (half, unless it reversed off a rail), so walk
-        // the rest one write at a time, reading back each, for at most one detent. It stops the
-        // moment a write fails or does not bring the slider closer: an ignored write leaves the
-        // detent result standing, and a write that moved it away is reported as State B.
-        // Only on a raw-unit range: on a normalized 0...1 slider a "unit" is the whole travel.
+        // #973: an AXValue write moved the header slider one raw unit toward the written value on
+        // Logic 12.3.1. The loop above leaves it within one detent (half, unless it reversed off a
+        // rail), so walk the rest one write at a time; on a normalized 0...1 slider a unit is all of it.
         let rawUnitRange = range.max - range.min > 2
         var fineSteps = 0
-        var fineWriteMovedAway = false
+        var lastFineWriteFrom: Double?
         let detentRawStep = 10
         let maxFineSteps = detentRawStep
         while rawUnitRange, fineSteps < maxFineSteps, let cur = readSlider(), cur.rounded() != targetRaw.rounded() {
@@ -286,15 +282,14 @@ extension AccessibilityChannel {
                 slider, kAXValueAttribute as String, NSNumber(value: targetRaw), runtime: runtime.ax
             ) else { break }
             fineSteps += 1
+            lastFineWriteFrom = cur
             usleep(25_000)
             var next = readSlider()
             if next == cur {
                 usleep(150_000)
                 next = readSlider()
             }
-            guard let next else { break }
-            if abs(next - targetRaw) > abs(cur - targetRaw) { fineWriteMovedAway = true }
-            guard abs(next - targetRaw) < abs(cur - targetRaw) else { break }
+            guard let next, abs(next - targetRaw) < abs(cur - targetRaw) else { break }
         }
 
         // Retried too, and for the same reason. This read is what decides State A versus State B:
@@ -303,6 +298,10 @@ extension AccessibilityChannel {
         // loop was fixed — a run that reached its target still came back State B here.
         let observedRaw = readSlider()
         let observedAfter = readContract()
+        var fineWriteMovedAway = false
+        if let from = lastFineWriteFrom, let raw = observedRaw {
+            fineWriteMovedAway = abs(raw - targetRaw) > abs(from - targetRaw)
+        }
         // One detent is ~10 raw units; "verified" means we converged to the
         // nearest AX-representable detent (within ~half a detent of target).
         let convergedToNearestDetent = observedRaw.map { abs($0 - targetRaw) <= 6.0 } ?? false
