@@ -15,6 +15,7 @@ import json
 import math
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import evidence as E  # noqa: E402
@@ -78,8 +79,15 @@ if not win:
     print(json.dumps(ev.write(), indent=1)); sys.exit(1)
 
 d.tool("logic_tracks", "select", {"index": 0})
-rows = (d.resource("logic://tracks") or {}).get("data") or []
-ref = (rows[0] or {}).get("track_ref") if rows else None
+# Polled, because the first read after the server starts can precede the poller: measured on 12.3 it
+# was `no_live_track_read_yet` with no rows, and 1.5 s later rows with no `track_ref` at all.
+ref = None
+for _ in range(20):
+    rows = (d.resource("logic://tracks") or {}).get("data") or []
+    ref = (rows[0] or {}).get("track_ref") if rows else None
+    if ref:
+        break
+    time.sleep(1)
 ev.check("973/precondition-track-0-by-reference", bool(ref),
          "track 0 has a target_ref, so no write depends on header order", f"target_ref={ref!r}", None)
 if not ref:
