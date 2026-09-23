@@ -141,7 +141,7 @@ Logic accepted the host write path but did not echo enough feedback for MCU veri
 
 ### Mixer values do not update
 
-Read `logic://mixer` after the write. `set_volume` and `set_pan` use visible-strip AX readback; `set_master_volume` depends on MCU feedback. A `verified` write with `reached_exact: false` landed within half a detent but not on the raw position nearest the request: the one-raw `AXValue` fine phase was refused (`fine_steps: 0`) or stopped when a write did not bring the slider closer. `observed_raw` is where it stopped. `set_send` is not exposed (State C `command_not_exposed`), so there is no send write to verify.
+Read `logic://mixer` after the write. `set_volume` and `set_pan` use visible-strip AX readback; `set_master_volume` depends on MCU feedback. A `verified` write with `reached_exact: false` landed within the detent tolerance but not on the raw position nearest the request: the `AXValue` fine phase was skipped, refused, stopped when a write did not bring the slider closer, or used all its writes. `fine_steps: 0` does not tell these apart, since it counts accepted write calls and a skipped phase or a first refused write both leave it at zero. State B `readback_mismatch` with a `reason_detail` about moving away means a fine write left the slider further from the target; it was not restored. `observed_raw` is where it stopped. `set_send` is not exposed (State C `command_not_exposed`), so there is no send write to verify.
 
 ## MIDI
 

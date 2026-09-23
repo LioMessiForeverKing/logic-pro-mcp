@@ -271,13 +271,16 @@ extension AccessibilityChannel {
 
         // #973: a direct AXValue write moves the header slider exactly one raw unit toward the
         // written value, measured on Logic 12.3.1 for volume and pan in both directions. The loop
-        // above leaves the slider within half a detent, so walk the last few units one write at a
-        // time, reading back each. Bounded, and it stops the moment a write fails or does not bring
-        // the slider closer, so where writes do not move it the detent result stands unchanged.
+        // above leaves the slider within one detent (half, unless it reversed off a rail), so walk
+        // the rest one write at a time, reading back each, for at most one detent. It stops the
+        // moment a write fails or does not bring the slider closer: an ignored write leaves the
+        // detent result standing, and a write that moved it away is reported as State B.
         // Only on a raw-unit range: on a normalized 0...1 slider a "unit" is the whole travel.
         let rawUnitRange = range.max - range.min > 2
         var fineSteps = 0
-        let maxFineSteps = 8
+        var fineWriteMovedAway = false
+        let detentRawStep = 10
+        let maxFineSteps = detentRawStep
         while rawUnitRange, fineSteps < maxFineSteps, let cur = readSlider(), cur.rounded() != targetRaw.rounded() {
             guard AXHelpers.setAttribute(
                 slider, kAXValueAttribute as String, NSNumber(value: targetRaw), runtime: runtime.ax
@@ -289,7 +292,9 @@ extension AccessibilityChannel {
                 usleep(150_000)
                 next = readSlider()
             }
-            guard let next, abs(next - targetRaw) < abs(cur - targetRaw) else { break }
+            guard let next else { break }
+            if abs(next - targetRaw) > abs(cur - targetRaw) { fineWriteMovedAway = true }
+            guard abs(next - targetRaw) < abs(cur - targetRaw) else { break }
         }
 
         // Retried too, and for the same reason. This read is what decides State A versus State B:
@@ -313,7 +318,7 @@ extension AccessibilityChannel {
             "observed": observedAfter ?? NSNull(),
             "observed_raw": observedRaw ?? NSNull(),
             "target_raw": targetRaw,
-            "detent_raw_step": 10,
+            "detent_raw_step": detentRawStep,
             "verify_source": "ax_slider",
             "write_method": "ax_increment_decrement",
             "nudge_steps": steps,
@@ -326,6 +331,10 @@ extension AccessibilityChannel {
             "reached_target": convergedToNearestDetent,
             "quantization_note": "Logic moves this fader in ~10-raw-unit detents and one raw unit per AXValue write; reached_exact says whether observed_raw is the whole raw position nearest the request.",
         ]
+        if fineWriteMovedAway {
+            baseExtras["reason_detail"] = "An AXValue write moved the slider further from the target, and the fine phase stopped there without restoring it; observed_raw is where it was left."
+            return .success(HonestContract.encodeStateB(reason: .readbackMismatch, extras: baseExtras))
+        }
         if convergedToNearestDetent, let actual = observedAfter {
             baseExtras["observed"] = actual
             return .success(HonestContract.encodeStateA(extras: baseExtras))
