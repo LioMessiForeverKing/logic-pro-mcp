@@ -650,23 +650,43 @@ private enum FakeSliderValueWrite: Sendable {
     case tenRawTowardWritten
 }
 
+/// #973 review: lets through the one slider read that follows the first value write, which is the
+/// fine phase reading its own write, and fails every read after it, so the verdict read is lost.
+private final class ReadsAfterValueWrite: @unchecked Sendable {
+    private let lock = NSLock()
+    private var readsSinceWrite: Int?
+    func noteWrite() {
+        lock.lock(); defer { lock.unlock() }
+        if readsSinceWrite == nil { readsSinceWrite = 0 }
+    }
+    func shouldFail() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let seen = readsSinceWrite else { return false }
+        readsSinceWrite = seen + 1
+        return seen >= 1
+    }
+}
+
 private func nudgeResponsiveLogicRuntime(
     _ builder: FakeAXRuntimeBuilder,
     app: AXUIElement,
     dropEveryNthSliderRead: Int = 0,
-    valueWrites: FakeSliderValueWrite = .oneRawTowardWritten
+    valueWrites: FakeSliderValueWrite = .oneRawTowardWritten,
+    sliderReadsFailAfterValueWrite: Bool = false
 ) -> AXLogicProElements.Runtime {
     let dropper = ReadDropper(every: dropEveryNthSliderRead)
+    let afterWrite = ReadsAfterValueWrite()
     let handler: @Sendable (AXUIElement, String) -> AnyObject?? = { element, attribute in
             guard attribute == (kAXValueAttribute as String),
                   (builder.attributeValue(element, kAXRoleAttribute as String) as? String)
                       == (kAXSliderRole as String) else { return AnyObject??.none }
             // `.some(nil)` is "handled, and the answer is nil" — an AX read that failed, not an
             // element without a value.
+            if sliderReadsFailAfterValueWrite, afterWrite.shouldFail() { return .some(nil) }
             return dropper.shouldDrop() ? .some(nil) : AnyObject??.none
     }
     let dropReads: (@Sendable (AXUIElement, String) -> AnyObject??)? =
-        dropEveryNthSliderRead == 0 ? nil : handler
+        dropEveryNthSliderRead == 0 && !sliderReadsFailAfterValueWrite ? nil : handler
     return builder.makeLogicRuntime(
         appElement: app,
         attributeValueHandler: dropReads,
@@ -677,6 +697,7 @@ private func nudgeResponsiveLogicRuntime(
                 builder.setAttribute(element, attribute, value)
                 return true
             }
+            afterWrite.noteWrite()
             guard valueWrites != .ignored,
                   let written = (value as? NSNumber)?.doubleValue,
                   let cur = (builder.attributeValue(element, attribute) as? NSNumber)?.doubleValue
@@ -4855,6 +4876,64 @@ func testMixerFinePhaseCoversADetentReversedOffARail(
     #expect((obj["observed_raw"] as? NSNumber)?.doubleValue == 153)
     #expect(obj["reason_detail"] is String)
     #expect((obj["fine_steps"] as? NSNumber)?.intValue == 1)
+}
+
+/// #973 review — the loop read a write moving away and the final read then failed. The loop's read
+/// is still an observation, so it is a mismatch that names the lost read, not a bare
+/// `readback_unavailable`.
+@Test func testMixerFinePhaseReportsAWriteSeenMovingAwayWhenTheFinalReadFails() async throws {
+    let builder = FakeAXRuntimeBuilder()
+    let app = builder.element(9850)
+    let window = builder.element(9851)
+    builder.setAttribute(app, kAXMainWindowAttribute as String, window)
+    let controls = attachTrackHeaderRail(
+        builder, window: window, siblings: [], baseID: 9_860,
+        volume: (value: 173, min: 0, max: 233),
+        pan: (value: 64, min: 0, max: 127)
+    )
+    let channel = makeAXBackedAccessibilityChannel(
+        builder: builder, app: app,
+        logicRuntime: nudgeResponsiveLogicRuntime(
+            builder, app: app, valueWrites: .tenRawTowardWritten, sliderReadsFailAfterValueWrite: true
+        )
+    )
+
+    let volume = AXValueExtractors.logicMixerFaderPositionToContract(147.0 / 233.0)
+    let result = await channel.execute(operation: "mixer.set_volume", params: ["index": "0", "value": String(volume)])
+    let obj = decodeAccessibilityJSON(result.message)
+    #expect(headerRaw(builder, controls.volume) == 153)
+    #expect(obj["state"] as? String == "B")
+    #expect(obj["reason"] as? String == "readback_mismatch")
+    #expect(obj["observed_raw"] is NSNull)
+    // Required first: measured here, `#expect((x as? String)?.contains(s) == true)` recorded no issue
+    // when x was nil, so the missing detail it was meant to catch passed.
+    let detail = try #require(obj["reason_detail"] as? String, "a write seen moving away went unreported")
+    #expect(detail.contains("the final read failed"))
+    #expect((obj["fine_steps"] as? NSNumber)?.intValue == 1)
+}
+
+/// #973 review — on a normalized slider one detent clamps to a rail, so a request for that rail is
+/// reached exactly, and `reached_exact` says so by equality rather than by rounding.
+@Test(arguments: [(start: 0.4, requested: 1.0), (start: 0.6, requested: 0.0)])
+func testMixerNormalizedSliderReportsAnExactRail(start: Double, requested: Double) async throws {
+    let builder = FakeAXRuntimeBuilder()
+    let app = builder.element(9870)
+    let window = builder.element(9871)
+    builder.setAttribute(app, kAXMainWindowAttribute as String, window)
+    let controls = attachTrackHeaderRail(
+        builder, window: window, siblings: [], baseID: 9_880,
+        volume: (value: start, min: 0, max: 1),
+        pan: (value: 64, min: 0, max: 127)
+    )
+    let channel = makeAXBackedAccessibilityChannel(
+        builder: builder, app: app, logicRuntime: nudgeResponsiveLogicRuntime(builder, app: app)
+    )
+
+    let result = await channel.execute(operation: "mixer.set_volume", params: ["index": "0", "value": String(requested)])
+    let obj = decodeAccessibilityJSON(result.message)
+    #expect(headerRaw(builder, controls.volume) == requested)
+    #expect((obj["fine_steps"] as? NSNumber)?.intValue == 0)
+    #expect(try #require(obj["reached_exact"] as? Bool), "an exact rail was reported as not exact")
 }
 
 /// #973 review — moving to the other side of the target at the same distance is a rounding tie,
