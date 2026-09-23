@@ -269,18 +269,16 @@ extension AccessibilityChannel {
             current = next
         }
 
-        // Retried too, and for the same reason. This read is what decides State A versus State B:
-        // a write that landed correctly and then failed its ONE verification read is reported as
-        // unverified, which is honest about the read and wrong about the write. Measured after the
-        // loop was fixed — a run that reached its target still came back State B here.
         // #973: a direct AXValue write moves the header slider exactly one raw unit toward the
         // written value, measured on Logic 12.3.1 for volume and pan in both directions. The loop
         // above leaves the slider within half a detent, so walk the last few units one write at a
         // time, reading back each. Bounded, and it stops the moment a write fails or does not bring
         // the slider closer, so where writes do not move it the detent result stands unchanged.
+        // Only on a raw-unit range: on a normalized 0...1 slider a "unit" is the whole travel.
+        let rawUnitRange = range.max - range.min > 2
         var fineSteps = 0
         let maxFineSteps = 8
-        while fineSteps < maxFineSteps, let cur = readSlider(), cur.rounded() != targetRaw.rounded() {
+        while rawUnitRange, fineSteps < maxFineSteps, let cur = readSlider(), cur.rounded() != targetRaw.rounded() {
             guard AXHelpers.setAttribute(
                 slider, kAXValueAttribute as String, NSNumber(value: targetRaw), runtime: runtime.ax
             ) else { break }
@@ -294,6 +292,10 @@ extension AccessibilityChannel {
             guard let next, abs(next - targetRaw) < abs(cur - targetRaw) else { break }
         }
 
+        // Retried too, and for the same reason. This read is what decides State A versus State B:
+        // a write that landed correctly and then failed its ONE verification read is reported as
+        // unverified, which is honest about the read and wrong about the write. Measured after the
+        // loop was fixed — a run that reached its target still came back State B here.
         let observedRaw = readSlider()
         let observedAfter = readContract()
         // One detent is ~10 raw units; "verified" means we converged to the
@@ -316,13 +318,13 @@ extension AccessibilityChannel {
             "write_method": "ax_increment_decrement",
             "nudge_steps": steps,
             "fine_steps": fineSteps,
-            "reached_exact": observedRaw.map { $0.rounded() == targetRaw.rounded() } ?? false,
+            "reached_exact": rawUnitRange && (observedRaw.map { $0.rounded() == targetRaw.rounded() } ?? false),
             // #685: `nudge_steps` alone is not checkable — a partial move and a complete one look
             // the same in it. These two are what a caller, a log or an evidence document needs to
             // see that the loop stopped short, without re-reading the fader to find out.
             "detents_to_target": startRaw.map { ((abs(targetRaw - $0) / 10.0) * 100).rounded() / 100 } ?? NSNull(),
             "reached_target": convergedToNearestDetent,
-            "quantization_note": "Logic moves this fader in ~10-raw-unit detents and one raw unit per AXValue write; reached_exact says whether observed_raw is the requested raw position.",
+            "quantization_note": "Logic moves this fader in ~10-raw-unit detents and one raw unit per AXValue write; reached_exact says whether observed_raw is the whole raw position nearest the request.",
         ]
         if convergedToNearestDetent, let actual = observedAfter {
             baseExtras["observed"] = actual
