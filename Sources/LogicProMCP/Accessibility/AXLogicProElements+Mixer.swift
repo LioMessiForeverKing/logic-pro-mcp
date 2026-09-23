@@ -43,7 +43,7 @@ extension AXLogicProElements {
     /// mixer-strip fader, but identity-safe — it belongs to exactly track
     /// `index` — and always present without the Mixer being visible. Callers
     /// drive it with AXIncrement/AXDecrement detents, then one-raw AXValue writes
-    /// (#973: a write moves it one raw unit toward the written value).
+    /// (#973: measured on Logic 12.3.1, a write moves it one raw unit toward it).
     static func findTrackHeaderVolumeFader(at index: Int, runtime: Runtime = .production) -> AXUIElement? {
         guard let header = findTrackHeader(at: index, runtime: runtime) else { return nil }
         return findVolumeFader(in: header, runtime: runtime.ax)

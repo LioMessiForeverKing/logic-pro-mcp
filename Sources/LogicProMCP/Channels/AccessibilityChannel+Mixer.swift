@@ -97,7 +97,7 @@ extension AccessibilityChannel {
         // move these sliders in deterministic ~10-raw-unit detents; we converge to
         // the nearest detent and read back every step. #973: an AXValue write does
         // not jump to the written value (`set 0.5` on a 0.76 fader looked unmoved),
-        // but it does move one raw unit toward it, which the fine phase below uses.
+        // but on Logic 12.3.1 it moved one raw unit toward it, which the fine phase uses.
         let slider: AXUIElement?
         switch target {
         case .volume: slider = AXLogicProElements.findTrackHeaderVolumeFader(at: index, runtime: runtime)
@@ -328,7 +328,7 @@ extension AccessibilityChannel {
             // see that the loop stopped short, without re-reading the fader to find out.
             "detents_to_target": startRaw.map { ((abs(targetRaw - $0) / 10.0) * 100).rounded() / 100 } ?? NSNull(),
             "reached_target": convergedToNearestDetent,
-            "quantization_note": "Logic moves this fader in ~10-raw-unit detents and one raw unit per AXValue write; reached_exact says whether observed_raw is the whole raw position nearest the request.",
+            "quantization_note": "Logic moves this fader in ~10-raw-unit detents, and an AXValue write moved it one raw unit on Logic 12.3.1; reached_exact says whether observed_raw is the whole raw position nearest the request.",
         ]
         if fineWriteMovedAway {
             baseExtras["reason_detail"] = "An AXValue write moved the slider further from the target, and the fine phase stopped there without restoring it; observed_raw is where it was left."
