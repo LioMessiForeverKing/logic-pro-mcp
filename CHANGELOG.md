@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+- Changed: `mixer.set_volume` and `mixer.set_pan` land on the requested raw position instead of the nearest ~10-raw detent. After the detent loop, a bounded fine phase writes `AXValue`, which moves Logic's track-header slider one raw unit toward the written value (measured on Logic 12.3.1, volume and pan, both directions), and reads back each step. New receipt fields `fine_steps` and `reached_exact`; `verified` and `write_method` are unchanged, so a Logic where the write does not move keeps the previous detent result. (#973)
 - Added: `LogicProMCPKit` library product, so a host application can link the `LogicProMCP` target as a SwiftPM dependency (no runtime behavior and no access level changes; no source file is touched, and the executable is unchanged. `Package.resolved` moves with it: CI's toolchain resolves 25 pins instead of 9 once the package vends a library). (#944)
 
 ---

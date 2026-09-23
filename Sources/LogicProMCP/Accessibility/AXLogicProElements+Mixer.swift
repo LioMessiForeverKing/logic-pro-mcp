@@ -41,9 +41,9 @@ extension AXLogicProElements {
     /// #107: the per-track volume fader inside the track HEADER (an AXSlider
     /// whose value-indicator reads "Volume"). Same channel parameter as the
     /// mixer-strip fader, but identity-safe — it belongs to exactly track
-    /// `index` — and always present without the Mixer being visible. Logic
-    /// ignores AXValue writes on it, so callers drive it with
-    /// AXIncrement/AXDecrement detents.
+    /// `index` — and always present without the Mixer being visible. Callers
+    /// drive it with AXIncrement/AXDecrement detents, then one-raw AXValue writes
+    /// (#973: a write moves it one raw unit toward the written value).
     static func findTrackHeaderVolumeFader(at index: Int, runtime: Runtime = .production) -> AXUIElement? {
         guard let header = findTrackHeader(at: index, runtime: runtime) else { return nil }
         return findVolumeFader(in: header, runtime: runtime.ax)
