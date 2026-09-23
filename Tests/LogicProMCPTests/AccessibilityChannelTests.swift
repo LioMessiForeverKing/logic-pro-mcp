@@ -640,10 +640,20 @@ private final class ReadDropper: @unchecked Sendable {
     }
 }
 
+/// #973: what an `AXValue` write on a header slider does. Measured on Logic 12.3.1 through the
+/// direct AX API, it moves the control exactly one raw unit toward the written value, whatever
+/// the distance; `.ignored` is the older observation that it does nothing, kept so the fine phase
+/// is shown to leave the detent result alone where writes do not move.
+private enum FakeSliderValueWrite: Sendable {
+    case oneRawTowardWritten
+    case ignored
+}
+
 private func nudgeResponsiveLogicRuntime(
     _ builder: FakeAXRuntimeBuilder,
     app: AXUIElement,
-    dropEveryNthSliderRead: Int = 0
+    dropEveryNthSliderRead: Int = 0,
+    valueWrites: FakeSliderValueWrite = .oneRawTowardWritten
 ) -> AXLogicProElements.Runtime {
     let dropper = ReadDropper(every: dropEveryNthSliderRead)
     let handler: @Sendable (AXUIElement, String) -> AnyObject?? = { element, attribute in
@@ -659,7 +669,21 @@ private func nudgeResponsiveLogicRuntime(
     return builder.makeLogicRuntime(
         appElement: app,
         attributeValueHandler: dropReads,
-        setAttributeHandler: nil,
+        setAttributeHandler: { element, attribute, value in
+            let isSlider = (builder.attributeValue(element, kAXRoleAttribute as String) as? String)
+                == (kAXSliderRole as String)
+            guard isSlider, attribute == (kAXValueAttribute as String) else {
+                builder.setAttribute(element, attribute, value)
+                return true
+            }
+            guard valueWrites == .oneRawTowardWritten,
+                  let written = (value as? NSNumber)?.doubleValue,
+                  let cur = (builder.attributeValue(element, attribute) as? NSNumber)?.doubleValue
+                      ?? (builder.attributeValue(element, attribute) as? Double) else { return true }
+            let step: Double = written > cur ? 1 : (written < cur ? -1 : 0)
+            builder.setAttribute(element, attribute, cur + step)
+            return true
+        },
         performActionHandler: { element, action in
             let number: @Sendable (String) -> Double? = { attr in
                 if let n = builder.attributeValue(element, attr) as? NSNumber { return n.doubleValue }
@@ -4040,8 +4064,8 @@ private final class LockedFlag: @unchecked Sendable {
 
 @Test func testAccessibilityChannelMixerWritesUseLogic12RawSliderRanges() async {
     // #107: writes are driven via the per-track header fader/pan with an
-    // AXIncrement/AXDecrement nudge (Logic ignores AXValue writes on its
-    // faders). The fake rail starts the volume fader at raw 173 (0...233) and
+    // AXIncrement/AXDecrement nudge, then #973's one-raw AXValue fine phase.
+    // The fake rail starts the volume fader at raw 173 (0...233) and
     // pan at the electrical center (64 of 0...127); the responsive runtime
     // moves each by ~10-raw-unit detents so the writer converges.
     let builder = FakeAXRuntimeBuilder()
@@ -4675,6 +4699,76 @@ func issue604DismissalSummaryReportsTheObservation() {
     #expect(required > 1, "the fixture did not actually require several detents")
     #expect(issued >= required - 1,
             "issued \(issued) of about \(required) detents — the loop gave up early")
+}
+
+/// #973 — the detent loop can only reach every tenth raw position, so a request between two
+/// detents landed up to five raw units away: 0.5 dB near unity, more on a quiet fader, and pan off
+/// by up to five of its 127 positions. A direct `AXValue` write moves the header slider one raw unit
+/// toward the written value, so a bounded fine phase after the loop walks the rest of the way.
+private func headerRaw(_ builder: FakeAXRuntimeBuilder, _ element: AXUIElement) -> Double {
+    (builder.attributeValue(element, kAXValueAttribute as String) as? NSNumber)?.doubleValue
+        ?? (builder.attributeValue(element, kAXValueAttribute as String) as? Double) ?? -1
+}
+
+@Test func testMixerWriteLandsExactlyBetweenDetents() async throws {
+    let builder = FakeAXRuntimeBuilder()
+    let app = builder.element(9730)
+    let window = builder.element(9731)
+    builder.setAttribute(app, kAXMainWindowAttribute as String, window)
+    let controls = attachTrackHeaderRail(
+        builder, window: window, siblings: [], baseID: 9_740,
+        volume: (value: 173, min: 0, max: 233),
+        pan: (value: 64, min: 0, max: 127)
+    )
+    let channel = makeAXBackedAccessibilityChannel(
+        builder: builder, app: app, logicRuntime: nudgeResponsiveLogicRuntime(builder, app: app)
+    )
+
+    // Raw 147 sits between the detents the loop can reach from 173 (163, 153, 143).
+    let volume = AXValueExtractors.logicMixerFaderPositionToContract(147.0 / 233.0)
+    let volumeResult = await channel.execute(
+        operation: "mixer.set_volume", params: ["index": "0", "value": String(volume)]
+    )
+    let volumeObj = decodeAccessibilityJSON(volumeResult.message)
+    #expect(headerRaw(builder, controls.volume) == 147, "the fader stopped on a detent, not on raw 147")
+    #expect(try #require(volumeObj["verified"] as? Bool))
+    #expect(try #require(volumeObj["reached_exact"] as? Bool))
+    #expect((volumeObj["fine_steps"] as? NSNumber)?.intValue == 4)
+    #expect(volumeObj["write_method"] as? String == "ax_increment_decrement")
+
+    // Pan 71 is seven right of centre 64; the loop can reach only 74 from there.
+    let pan = (71.0 - 63.5) / 63.5
+    let panResult = await channel.execute(operation: "mixer.set_pan", params: ["index": "0", "value": String(pan)])
+    let panObj = decodeAccessibilityJSON(panResult.message)
+    #expect(headerRaw(builder, controls.pan) == 71, "the pan stopped on a detent, not on raw 71")
+    #expect(try #require(panObj["reached_exact"] as? Bool))
+}
+
+/// #973 — where a value write does not move the slider, the fine phase stops at once and the
+/// detent result stands exactly as before: still verified within half a detent, and saying it is
+/// not exact rather than claiming a precision it did not reach.
+@Test func testMixerFinePhaseLeavesTheDetentResultWhereValueWritesDoNotMove() async throws {
+    let builder = FakeAXRuntimeBuilder()
+    let app = builder.element(9750)
+    let window = builder.element(9751)
+    builder.setAttribute(app, kAXMainWindowAttribute as String, window)
+    let controls = attachTrackHeaderRail(
+        builder, window: window, siblings: [], baseID: 9_760,
+        volume: (value: 173, min: 0, max: 233),
+        pan: (value: 64, min: 0, max: 127)
+    )
+    let channel = makeAXBackedAccessibilityChannel(
+        builder: builder, app: app,
+        logicRuntime: nudgeResponsiveLogicRuntime(builder, app: app, valueWrites: .ignored)
+    )
+
+    let volume = AXValueExtractors.logicMixerFaderPositionToContract(147.0 / 233.0)
+    let result = await channel.execute(operation: "mixer.set_volume", params: ["index": "0", "value": String(volume)])
+    let obj = decodeAccessibilityJSON(result.message)
+    #expect(headerRaw(builder, controls.volume) == 143)
+    #expect(try #require(obj["verified"] as? Bool))
+    #expect(!(try #require(obj["reached_exact"] as? Bool)))
+    #expect((obj["fine_steps"] as? NSNumber)?.intValue == 1, "a write that did not move was repeated")
 }
 
 // MARK: - #304 set_tempo must not read its own typed text as the project's tempo

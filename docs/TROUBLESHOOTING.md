@@ -141,7 +141,7 @@ Logic accepted the host write path but did not echo enough feedback for MCU veri
 
 ### Mixer values do not update
 
-Read `logic://mixer` after the write. `set_volume` and `set_pan` use visible-strip AX readback; `set_master_volume` depends on MCU feedback. `set_send` is not exposed (State C `command_not_exposed`), so there is no send write to verify.
+Read `logic://mixer` after the write. `set_volume` and `set_pan` use visible-strip AX readback; `set_master_volume` depends on MCU feedback. A `verified` write with `reached_exact: false` landed on the nearest detent but not the exact raw position: the one-raw `AXValue` fine phase did not move the slider, which `fine_steps` of 1 with an unchanged `observed_raw` shows. `set_send` is not exposed (State C `command_not_exposed`), so there is no send write to verify.
 
 ## MIDI
 

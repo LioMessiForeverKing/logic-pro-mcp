@@ -251,9 +251,8 @@ enum AXValueExtractors {
     }
 
     /// #107: target raw AX value for a desired public mixer volume contract,
-    /// for the `AXIncrement`/`AXDecrement` nudge writer (Logic ignores `AXValue`
-    /// writes on its faders). Mirrors `setLogicMixerFaderValue`'s contract→raw
-    /// math without performing the (ineffective) write.
+    /// for the `AXIncrement`/`AXDecrement` nudge writer and its #973 one-raw
+    /// `AXValue` fine phase. Mirrors `setLogicMixerFaderValue`'s contract→raw math.
     static func logicMixerFaderContractToRaw(_ contract: Double, range: SliderRange) -> Double {
         let clamped = min(max(contract, 0.0), 1.0)
         let position = isLogicMixerRawFaderRange(range)
