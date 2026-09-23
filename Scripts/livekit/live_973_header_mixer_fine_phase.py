@@ -114,40 +114,41 @@ for control in (VOL, PAN):
     original[control] = probe.get("observed_before")
 ev.note("973/original-contract-values", original)
 
-for control, raw in WHOLE + FRACTIONAL:
-    case = "whole" if float(raw).is_integer() else "fractional"
-    body = write(control, raw, case)
-    ok = (body.get("state") == "A" and body.get("reached_exact") is True
-          and body.get("observed_raw") == whole(raw))
-    ev.check(f"973/{control}-{raw}-lands-on-the-nearest-whole-raw", ok,
-             f"State A, reached_exact true, observed_raw {whole(raw)}",
-             f"state={body.get('state')!r} reached_exact={body.get('reached_exact')!r} "
-             f"observed_raw={body.get('observed_raw')!r} nudge={body.get('nudge_steps')!r} "
-             f"fine={body.get('fine_steps')!r}", MUTATION)
+try:
+    for control, raw in WHOLE + FRACTIONAL:
+        case = "whole" if float(raw).is_integer() else "fractional"
+        body = write(control, raw, case)
+        ok = (body.get("state") == "A" and body.get("reached_exact") is True
+              and body.get("observed_raw") == whole(raw))
+        ev.check(f"973/{control}-{raw}-lands-on-the-nearest-whole-raw", ok,
+                 f"State A, reached_exact true, observed_raw {whole(raw)}",
+                 f"state={body.get('state')!r} reached_exact={body.get('reached_exact')!r} "
+                 f"observed_raw={body.get('observed_raw')!r} nudge={body.get('nudge_steps')!r} "
+                 f"fine={body.get('fine_steps')!r}", MUTATION)
 
-for control, start, raw in RAIL:
-    first = write(control, start, "rail-start")
-    body = write(control, raw, "rail")
-    ok = (first.get("observed_raw") == start and body.get("state") == "A"
-          and body.get("reached_exact") is True and body.get("observed_raw") == whole(raw))
-    ev.check(f"973/{control}-{start}-to-{raw}-covers-a-detent-reversed-off-a-rail", ok,
-             f"from raw {start}, State A, reached_exact true, observed_raw {whole(raw)}",
-             f"start_raw={first.get('observed_raw')!r} state={body.get('state')!r} "
-             f"reached_exact={body.get('reached_exact')!r} observed_raw={body.get('observed_raw')!r} "
-             f"nudge={body.get('nudge_steps')!r} fine={body.get('fine_steps')!r}",
-             "AccessibilityChannel+Mixer.swift `maxFineSteps = 8`: the rail case stops one write short")
+    for control, start, raw in RAIL:
+        first = write(control, start, "rail-start")
+        body = write(control, raw, "rail")
+        ok = (first.get("observed_raw") == start and body.get("state") == "A"
+              and body.get("reached_exact") is True and body.get("observed_raw") == whole(raw))
+        ev.check(f"973/{control}-{start}-to-{raw}-covers-a-detent-reversed-off-a-rail", ok,
+                 f"from raw {start}, State A, reached_exact true, observed_raw {whole(raw)}",
+                 f"start_raw={first.get('observed_raw')!r} state={body.get('state')!r} "
+                 f"reached_exact={body.get('reached_exact')!r} observed_raw={body.get('observed_raw')!r} "
+                 f"nudge={body.get('nudge_steps')!r} fine={body.get('fine_steps')!r}",
+                 "AccessibilityChannel+Mixer.swift `maxFineSteps = 8`: the rail case stops one write short")
 
-moved = ev.shot("header-after-writes", settle_region=BAND)
-ev.visual("973/the-header-sliders-moved", before["file"], moved["file"], BAND, subject=BAND_SUBJECT,
-          expect_change=True,
-          why="the run leaves volume at raw 232 and pan at 126 from about 173 and 64, so the header's own "
-              "pixels must differ; this is the witness that does not go through the product's readback")
-
-restored = {}
-for control in (VOL, PAN):
-    if isinstance(original.get(control), (int, float)):
-        body = d.tool("logic_mixer", control, {"target_ref": ref, "value": repr(original[control])})
-        restored[control] = body.get("observed_after") if isinstance(body, dict) else None
+    moved = ev.shot("header-after-writes", settle_region=BAND)
+    ev.visual("973/the-header-sliders-moved", before["file"], moved["file"], BAND, subject=BAND_SUBJECT,
+              expect_change=True,
+              why="the run leaves volume at raw 232 and pan at 126 from about 173 and 64, so the header's own "
+                  "pixels must differ; this is the witness that does not go through the product's readback")
+finally:
+    restored = {}
+    for control in (VOL, PAN):
+        if isinstance(original.get(control), (int, float)):
+            body = d.tool("logic_mixer", control, {"target_ref": ref, "value": repr(original[control])})
+            restored[control] = body.get("observed_after") if isinstance(body, dict) else None
 ev.restored("973/volume-and-pan-put-back",
             all(isinstance(restored.get(c), (int, float)) and abs(restored[c] - original[c]) < 0.01
                 for c in (VOL, PAN)),
