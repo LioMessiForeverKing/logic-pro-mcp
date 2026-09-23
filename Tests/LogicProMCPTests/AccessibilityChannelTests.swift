@@ -4771,6 +4771,29 @@ private func headerRaw(_ builder: FakeAXRuntimeBuilder, _ element: AXUIElement) 
     #expect((obj["fine_steps"] as? NSNumber)?.intValue == 1, "a write that did not move was repeated")
 }
 
+/// #973 — on a normalized 0...1 header slider a "raw unit" is the whole travel, so the fine phase
+/// must not run there and `reached_exact` must not call 0.6 and 0.9 the same position.
+@Test func testMixerFinePhaseSkipsANormalizedSliderRange() async throws {
+    let builder = FakeAXRuntimeBuilder()
+    let app = builder.element(9770)
+    let window = builder.element(9771)
+    builder.setAttribute(app, kAXMainWindowAttribute as String, window)
+    let controls = attachTrackHeaderRail(
+        builder, window: window, siblings: [], baseID: 9_780,
+        volume: (value: 0.6, min: 0, max: 1),
+        pan: (value: 64, min: 0, max: 127)
+    )
+    let channel = makeAXBackedAccessibilityChannel(
+        builder: builder, app: app, logicRuntime: nudgeResponsiveLogicRuntime(builder, app: app)
+    )
+
+    let result = await channel.execute(operation: "mixer.set_volume", params: ["index": "0", "value": "0.9"])
+    let obj = decodeAccessibilityJSON(result.message)
+    #expect(headerRaw(builder, controls.volume) == 0.6, "the fine phase moved a normalized slider")
+    #expect((obj["fine_steps"] as? NSNumber)?.intValue == 0)
+    #expect(!(try #require(obj["reached_exact"] as? Bool)), "0.6 was reported as exactly 0.9")
+}
+
 // MARK: - #304 set_tempo must not read its own typed text as the project's tempo
 
 /// The tempo fixture, plus a one-button top-level `AXDialog` alert that is either already present
