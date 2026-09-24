@@ -94,6 +94,27 @@ if not ref:
     d.close()
     print(json.dumps(ev.write(), indent=1)); sys.exit(1)
 
+# Waited for before the rail is located or captured, because Logic draws a surface-bank bar on the
+# header once it binds this server's MCU ports, and that bar moves the row. Measured on 12.3
+# (2026-09-24): the header's pixels changed in the same poll that `isConnected` and
+# `registeredAsDevice` turned true, about 4 s after the server started, and changed back when it
+# exited. A first capture taken before that differs from every later one with no write involved.
+mcu = {}
+for _ in range(40):
+    state = d.resource("logic://mcu/state") or {}
+    mcu = (state.get("data", state) if isinstance(state, dict) else {}).get("connection") or {}
+    if mcu.get("isConnected") and mcu.get("registeredAsDevice"):
+        break
+    time.sleep(0.5)
+bound = bool(mcu.get("isConnected") and mcu.get("registeredAsDevice"))
+ev.check("973/precondition-the-mcu-surface-is-bound-before-the-first-capture", bound,
+         "Logic has bound this server as its control surface, so every capture shows the same header",
+         f"isConnected={mcu.get('isConnected')!r} registeredAsDevice={mcu.get('registeredAsDevice')!r}",
+         None)
+if not bound:
+    d.close()
+    print(json.dumps(ev.write(), indent=1)); sys.exit(1)
+
 BAND, BAND_SUBJECT = ev.located_band("Tracks header")
 ev.check("973/precondition-the-track-header-rail-was-located", BAND is not None and bool(BAND_SUBJECT),
          "the track-header rail, located by the AXDescription it carries",
