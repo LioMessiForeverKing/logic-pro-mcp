@@ -111,6 +111,23 @@ class WhatTheStructuredResultSays(unittest.TestCase):
         self.assertEqual([entry["code"] for entry in result["diagnostics"]],
                          ["hidden_declaration"])
 
+    def test_a_declaration_in_any_code_block_is_the_same_diagnosis(self):
+        """Every form GitHub renders as code, not only the closed backtick fence (review of #975)."""
+        for body in hidden_forms(f"This change {NO_FACT}: packaging only."):
+            with self.subTest(body):
+                status, result = self.diagnose(body)
+                self.assertEqual(status, 1)
+                self.assertEqual([entry["code"] for entry in result["diagnostics"]],
+                                 ["hidden_declaration"])
+
+    def test_a_declaration_in_prose_beside_a_code_block_is_satisfied(self):
+        """The control for the case above."""
+        for body in visible_forms(f"that this change {NO_FACT}: packaging only"):
+            with self.subTest(body):
+                status, result = self.diagnose(body)
+                self.assertEqual(status, 0)
+                self.assertEqual(result["category"], "satisfied")
+
     def test_a_logic_facing_change_may_not_declare_its_way_out(self):
         status, result = self.diagnose(f"This change {NO_FACT}.\n", [LOGIC_FACING_SAMPLE])
         self.assertEqual(status, 1)
@@ -436,6 +453,351 @@ class TheTwoRenderingsAgree(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertEqual(stdout, "")
         self.assertIn("--format applies to --text", stderr)
+
+
+
+#: A record on main that declares `canon_not_applicable`, and the one file its `depends` names.
+BEHAVIOURAL_RECORD = ("docs/observations/2026-09-15-an-auxiliary-window-steals-the-track-menu-"
+                      "and-that-is-the-sweep-only-failure.json")
+BEHAVIOURAL_DEPENDS = "Sources/LogicProMCP/Channels/AccessibilityChannel+Tracks.swift"
+
+#: A real schema-3 record that CITES instead. It is evidence about a label, not a behaviour.
+CITING_RECORD = ("docs/observations/2026-09-14-a-korean-input-source-silently-breaks-every-key-"
+                 "command-operation.json")
+
+#: A string the pinned corpus holds, measured with `_citable_strings_in` on 2026-09-24.
+CITABLE = "Metronome"
+
+
+def hidden_forms(text):
+    """Bodies in which GitHub renders `text` only as code or not at all.
+
+    Each was rendered through GitHub's renderer (`gh api markdown`, mode gfm) on 2026-09-24, and
+    so was each form in `visible_forms()`.
+    """
+    return (
+        f"Evidence below.\n```\n{text}\n```\n",
+        f"Evidence below.\n<!-- {text} -->\n",
+        f"Evidence below.\n<!-- {text}\n",
+        f"Evidence below.\n~~~\n{text}\n~~~\n",
+        f"Evidence below.\n```\n{text}\n",
+        f"Evidence below.\n````\n```\n{text}\n````\n",
+        f"Evidence below.\n\n    {text}\n",
+        f"Evidence below.\n\n\t{text}\n",
+        f"## Evidence\n    {text}\n",
+        f"Evidence below.\n> ~~~\n> {text}\n> ~~~\n",
+        f"Evidence below.\n>     {text}\n",
+        f"- evidence\n\n  ```\n  {text}\n  ```\n",
+        f"- evidence\n    ```\n    {text}\n    ```\n",
+        f"- evidence\n    ~~~\n    {text}\n    ~~~\n",
+        f"Evidence below.\n```\n> ```\n{text}\n```\n",
+        f"Evidence below.\n```\n    ```\n{text}\n```\n",
+        # A fence opened on a list item's own line, which the first line parser missed and then
+        # read the closer as an opener (review of #975, round 2).
+        f"- ```\n  {text}\n  ```\n",
+        f"- ~~~\n  {text}\n  ~~~\n",
+        f"1. ```\n   {text}\n   ```\n",
+        f"1. ~~~\n   {text}\n   ~~~\n",
+        # Its closer on a line the list item does not reach: that line opens a new fence.
+        f"- ```\n  example\n```\n{text}\n```\n",
+        # Raw `<pre>`, closed, unclosed and inside a sentence (review of #975, round 2).
+        f"Evidence below.\n<pre>{text}</pre>\n",
+        f"Evidence below.\n\n<pre>\n{text}\n",
+        f"Evidence: <pre>{text}</pre> here.\n",
+        # A footnote nothing refers to, which GitHub drops.
+        f"Evidence below.\n\n[^note]: {text}\n",
+        # An HTML block holds a fence line, so the next fence line opens rather than closes.
+        f"<div>\n```\n\n```\n{text}\n",
+        # A line indented under a table is code, not a continuation.
+        f"| a | b |\n|---|---|\n    {text}\n",
+        # A comment an HTML block leaves open runs to the end of the page.
+        f"<div>\n<!--\n</div>\n\n{text}\n",
+        # A browser reads `<?` in raw HTML as a comment.
+        f"<div>\n<?note {text} ?>\n</div>\n",
+        # A tag alone on its line opens an HTML block where a quote's paragraph is not continued.
+        f"> Evidence\n<span>\n```\n\n```\n{text}\n",
+        # An HTML block interrupts a paragraph, and one whose end is on a later line ends there.
+        f"Evidence below.\n<div>\n```\n\n```\n{text}\n",
+        f"<!--\nnote\n-->\n```\n{text}\n```\n",
+        # A list item that begins blank ends at the next blank line, and one whose marker is
+        # followed by five spaces or more opens indented code.
+        f"-\n\n    {text}\n",
+        f"-     {text}\n",
+        # A comment or a processing instruction inside a sentence.
+        f"Evidence <!-- {text} --> below.\n",
+        f"Evidence <?note {text} ?> below.\n",
+        # A link definition at the start of a paragraph, as its target or its title, whether a link
+        # uses it or not; its target or title may be on the next line and its label span two.
+        f"[record]: <{text}>\n",
+        f"Evidence below.\n\n[record]: /x \"{text}\"\n",
+        f"[record]: /x\n'{text}'\n",
+        f"[a]: /x\n[record]: /y ({text})\n",
+        f"[the\nrecord]:\n<{text}>\n",
+        f"> [record]: <{text}>  \n",
+        f"- [record]: <{text}>\n",
+        f"# Evidence\n[record]: <{text}>\n",
+        f"[used]: <{text}>\n\nEvidence: [the record][used].\n",
+        f"Evidence below.\n\n   [record]: <{text}>\n",
+        f"[re\\]cord]: <{text}>\n",
+        f'[record]: /x\u00a0y "{text}"\n',
+        f'[record]: /x "a\\" {text}"\n',
+        # A comment in a table row.
+        f"| a |\n|---|\n| <!-- {text} --> |\n",
+        # A table whose delimiter row starts with a dash, then code under it; and a delimiter row
+        # indented four spaces, which is text, so what follows is not a table's row.
+        f"Evidence: a | b\n---|---\n    {text}\n",
+        f"Evidence:\n    ---\n<span>\n```\n{text}\n```\n",
+        f"[record]: <{text}>\n    ---\n",
+    )
+
+
+def visible_forms(text):
+    """Bodies in which GitHub renders `text` as prose, each next to a form above."""
+    return (
+        f"Evidence:\n```\nexample\n```\nThe record is {text}.\n",
+        f"Evidence:\n~~~\nexample\n~~~\nThe record is {text}.\n",
+        f"Evidence:\n<!-- note -->\nThe record is {text}.\n",
+        f"The record is\n    {text}\nand it measures the menu.\n",
+        f"- evidence\n    - the record is {text}\n",
+        f"> The record is {text}.\n",
+        f"```inline``` and the record is {text}.\n",
+        # Hidden by the parser at 88b895f7, which did not follow a list item's or a quote's extent.
+        f"- evidence\n\n    the record is {text}\n",
+        f"- item\n  ```\n  code\nThe record is {text}.\n",
+        f"> ```\n> code\nThe record is {text}.\n",
+        f"- ```\n  example\n  ```\nThe record is {text}.\n",
+        f"- ~~~\n  example\n  ~~~\nThe record is {text}.\n",
+        f"<div>\n```\n</div>\n\nThe record is {text}.\n",
+        f"| a | b |\n|---|---|\n\nThe record is {text}.\n",
+        # A closed comment hides itself and nothing after it, inline and in an HTML block.
+        f"Evidence <!-- note --> and the record is {text}.\n",
+        f"<div>\n<!-- note -->\nThe record is {text}.\n</div>\n",
+        # Neither an ordered item starting at 2 nor a table whose delimiter row counts other cells
+        # interrupts a paragraph, and a line no quote marker opens continues the quoted paragraph.
+        f"Evidence:\n2. ```\n   the record is {text}\n   ```\n",
+        f"Evidence: a | b\n|---|\n    the record is {text}\n",
+        f"> The record is\n    {text}\n",
+        # An inline `<!--` nothing closes is text, and GitHub shows it.
+        f"Evidence <!-- and the record is {text}.\n",
+        # Not link definitions: a title with more text after it, a line after the definition, one
+        # that would interrupt a paragraph, a space before the colon, a blank label, and any in a
+        # table.
+        f"[record]: /x \"t\" and the record is {text}.\n",
+        f"[record]: /x\n\"t\" and the record is {text}.\n",
+        f"[record]: /x\nThe record is {text}.\n",
+        f"Evidence:\n[record]: the record is {text}\n",
+        f"[record] : the record is {text}\n",
+        f'[ ]: /x "the record is {text}"\n',
+        f"[record]: /x \"{text}\"\n|---|\n",
+        f"| a |\n|---|\n[record]: /x \"{text}\"\n",
+        # Nor a label holding a bracket, a title not set apart from its target, a parenthesized
+        # title holding a parenthesis, or an angle-bracketed target running over a line or
+        # holding a `<`.
+        f'[re[cord]: /x "the record is {text}"\n',
+        f'[record]: x"t and the record is {text}"\n',
+        f"[record]: /x (a(the record is {text})\n",
+        f"[record]: <x\nthe record is {text}, see>\n",
+        f'[record]: <x <y>\n"the record is {text}"\n',
+        # A delimiter row indented four spaces, or one a list item starts, makes no table.
+        f"Evidence: a | b\n    ---|---\n    the record is {text}\n",
+        f"Evidence: a | b\n- | -\n    the record is {text}\n",
+    )
+
+
+class ABehaviouralRecordInPlaceOfACitation(unittest.TestCase):
+    """A Logic-facing change whose evidence is behaviour may name the record that holds it.
+
+    The label citation is not faked for this: a citation establishes what a label SAYS, and a
+    change that rests on what an element DOES has no row to cite. The record category for that is
+    rule 13's `canon_not_applicable`, and each case below pins one of the conditions under which a
+    named record is allowed to stand in for the citation.
+    """
+
+    def diagnose(self, body, changed, root=REPO):
+        fixture = BodyFixture(self, body, changed)
+        status, stdout, _ = run(["--text", fixture.body, "--changed", fixture.changed,
+                                 "--format", "json"], root=root)
+        return status, json.loads(stdout)
+
+    def assertRefused(self, status, result, because):
+        self.assertEqual(status, 1)
+        self.assertEqual(result["category"], "actionable")
+        self.assertEqual(codes(json.dumps(result)), ["behavioural_record_refused"])
+        self.assertIn(because, result["diagnostics"][0]["message"])
+        self.assertEqual(result["records"], [])
+
+    def test_a_record_this_change_writes_about_code_it_changes_satisfies_the_body(self):
+        status, result = self.diagnose(
+            f"The evidence is {BEHAVIOURAL_RECORD}, which measures what the menu does.\n",
+            [BEHAVIOURAL_RECORD, BEHAVIOURAL_DEPENDS])
+        self.assertEqual(status, 0)
+        self.assertEqual(result["category"], "satisfied")
+        self.assertEqual(result["diagnostics"], [])
+        self.assertEqual(result["records"], [BEHAVIOURAL_RECORD])
+
+    def test_inline_backticks_and_a_link_are_visible(self):
+        for body in (f"Evidence: `{BEHAVIOURAL_RECORD}`.\n",
+                     f"Evidence: [the record]({BEHAVIOURAL_RECORD}).\n"):
+            with self.subTest(body):
+                status, result = self.diagnose(body, [BEHAVIOURAL_RECORD, BEHAVIOURAL_DEPENDS])
+                self.assertEqual(status, 0)
+                self.assertEqual(result["records"], [BEHAVIOURAL_RECORD])
+
+    def test_the_prose_rendering_names_the_record_and_not_the_opt_out(self):
+        fixture = BodyFixture(self, f"Evidence: {BEHAVIOURAL_RECORD}.\n",
+                              [BEHAVIOURAL_RECORD, BEHAVIOURAL_DEPENDS])
+        status, stdout, _ = run(["--text", fixture.body, "--changed", fixture.changed])
+        self.assertEqual(status, 0)
+        self.assertIn("behavioural record", stdout)
+        self.assertIn(BEHAVIOURAL_RECORD, stdout)
+        self.assertNotIn(NO_FACT, stdout)
+
+    def test_a_record_this_change_does_not_write_is_refused(self):
+        status, result = self.diagnose(f"Evidence: {BEHAVIOURAL_RECORD}.\n",
+                                       [BEHAVIOURAL_DEPENDS])
+        self.assertRefused(status, result, "not in this change's file list")
+
+    def test_a_record_about_code_this_change_does_not_touch_is_refused(self):
+        status, result = self.diagnose(f"Evidence: {BEHAVIOURAL_RECORD}.\n",
+                                       [BEHAVIOURAL_RECORD, LOGIC_FACING_SAMPLE])
+        self.assertRefused(status, result, "none of its `depends`")
+
+    def test_a_record_named_only_where_a_reader_does_not_see_it_is_not_named(self):
+        for body in hidden_forms(BEHAVIOURAL_RECORD):
+            with self.subTest(body):
+                status, result = self.diagnose(body, [BEHAVIOURAL_RECORD, BEHAVIOURAL_DEPENDS])
+                self.assertEqual(status, 1)
+                self.assertEqual(codes(json.dumps(result)), ["logic_facing_opt_out"])
+
+    def test_a_record_in_prose_around_those_forms_is_named(self):
+        """The control. Without it the case above passes for a checker that reads nothing."""
+        for body in visible_forms(BEHAVIOURAL_RECORD):
+            with self.subTest(body):
+                status, result = self.diagnose(body, [BEHAVIOURAL_RECORD, BEHAVIOURAL_DEPENDS])
+                self.assertEqual(status, 0)
+                self.assertEqual(result["records"], [BEHAVIOURAL_RECORD])
+
+    def test_a_record_that_cites_instead_of_declaring_is_refused(self):
+        status, result = self.diagnose(f"Evidence: {CITING_RECORD}.\n",
+                                       [CITING_RECORD, BEHAVIOURAL_DEPENDS])
+        self.assertRefused(status, result, "carries no `canon_not_applicable`")
+
+    def test_a_record_that_does_not_exist_is_refused(self):
+        missing = "docs/observations/2026-09-24-no-such-record.json"
+        status, result = self.diagnose(f"Evidence: {missing}.\n",
+                                       [missing, BEHAVIOURAL_DEPENDS])
+        self.assertRefused(status, result, "no observation record exists")
+
+    def test_a_body_quoting_a_string_logic_ships_is_refused(self):
+        status, result = self.diagnose(
+            f"Evidence: {BEHAVIOURAL_RECORD}. The `{CITABLE}` button moves.\n",
+            [BEHAVIOURAL_RECORD, BEHAVIOURAL_DEPENDS])
+        self.assertRefused(status, result, repr(CITABLE))
+
+    def tree_with_record(self, name, record):
+        """A root whose `docs/observations/` holds one more record, symlinked like the trees above.
+
+        `REPO` comes from `abspath(__file__)` without resolving symlinks, so the checker reads this
+        tree's observations and the real everything else.
+        """
+        root = tempfile.mkdtemp(prefix="canon-behavioural-")
+        self.addCleanup(shutil.rmtree, root, True)
+        for entry in os.listdir(REPO):
+            if entry != "docs":
+                os.symlink(os.path.join(REPO, entry), os.path.join(root, entry))
+        os.makedirs(os.path.join(root, "docs", "observations"))
+        for entry in os.listdir(os.path.join(REPO, "docs")):
+            if entry != "observations":
+                os.symlink(os.path.join(REPO, "docs", entry), os.path.join(root, "docs", entry))
+        for entry in os.listdir(os.path.join(REPO, "docs", "observations")):
+            os.symlink(os.path.join(REPO, "docs", "observations", entry),
+                       os.path.join(root, "docs", "observations", entry))
+        with open(os.path.join(root, "docs", "observations", name), "w",
+                  encoding="utf-8") as handle:
+            json.dump(record, handle)
+        return root
+
+    def fixture_record(self, reading, name="2026-09-24-fixture-behavioural-record.json"):
+        """The real behavioural record with one reading added, under a new name.
+
+        Built from a record the validator accepts, so a refusal below is the condition the case
+        names. A hand-written record refused by the validator for a missing key would make every
+        refusal pass and the control fail.
+        """
+        with open(os.path.join(REPO, BEHAVIOURAL_RECORD), encoding="utf-8") as handle:
+            record = json.load(handle)
+        record["id"] = name[: -len(".json")]
+        record["date"] = name[:10]
+        first, *rest = record["observations"]
+        record["observations"] = [dict(first, reading=reading), *rest]
+        return record
+
+    def test_a_declaration_rule_13_refuses_is_refused(self):
+        name = "2026-09-24-fixture-behavioural-record.json"
+        rel = f"docs/observations/{name}"
+        root = self.tree_with_record(name, self.fixture_record(CITABLE))
+        status, result = self.diagnose(f"Evidence: {rel}.\n", [rel, BEHAVIOURAL_DEPENDS],
+                                       root=root)
+        self.assertRefused(status, result, "rule 13")
+
+    def test_a_record_below_schema_3_is_refused(self):
+        name = "2026-09-24-fixture-behavioural-record.json"
+        rel = f"docs/observations/{name}"
+        record = dict(self.fixture_record("the menu opened only after the window was closed"),
+                      schema=2)
+        root = self.tree_with_record(name, record)
+        status, result = self.diagnose(f"Evidence: {rel}.\n", [rel, BEHAVIOURAL_DEPENDS],
+                                       root=root)
+        self.assertRefused(status, result, "schema 2")
+
+    def test_a_record_that_depends_only_on_a_record_is_refused(self):
+        """A record is not the code it is evidence for, even when this change writes both."""
+        name = "2026-09-24-fixture-behavioural-record.json"
+        rel = f"docs/observations/{name}"
+        record = dict(self.fixture_record("the menu opened only after the window was closed"),
+                      depends=[rel])
+        root = self.tree_with_record(name, record)
+        status, result = self.diagnose(f"Evidence: {rel}.\n", [rel, BEHAVIOURAL_DEPENDS],
+                                       root=root)
+        self.assertRefused(status, result, "none of its `depends`")
+
+    def test_a_record_that_depends_only_on_a_document_is_refused(self):
+        """A document is not code, even when this change writes it and edits code besides."""
+        name = "2026-09-24-fixture-behavioural-record.json"
+        rel = f"docs/observations/{name}"
+        for document in ("docs/roadmap/README.md", LOGIC_FACING_SAMPLE):
+            with self.subTest(document):
+                record = dict(self.fixture_record("the menu opened only after the window was "
+                                                  "closed"), depends=[document])
+                root = self.tree_with_record(name, record)
+                status, result = self.diagnose(f"Evidence: {rel}.\n",
+                                               [rel, document, BEHAVIOURAL_DEPENDS], root=root)
+                self.assertRefused(status, result, "none of its `depends`")
+
+    def test_a_record_the_validator_refuses_is_refused(self):
+        name = "2026-09-24-fixture-behavioural-record.json"
+        rel = f"docs/observations/{name}"
+        base = self.fixture_record("the menu opened only after the window was closed")
+        for change, because in (({"schema": 4}, "schema is 4"),
+                                ({"depends": [f"{BEHAVIOURAL_DEPENDS}:noSuchSymbolAnywhere"]},
+                                 "noSuchSymbolAnywhere")):
+            with self.subTest(change):
+                root = self.tree_with_record(name, dict(base, **change))
+                status, result = self.diagnose(f"Evidence: {rel}.\n", [rel, BEHAVIOURAL_DEPENDS],
+                                               root=root)
+                self.assertRefused(status, result, "check-observation-records.py refuses it")
+                self.assertIn(because, result["diagnostics"][0]["message"])
+
+    def test_the_same_fixture_without_the_citable_reading_is_satisfied(self):
+        """The control. Without it the case above passes for any reason the fixture tree fails."""
+        name = "2026-09-24-fixture-behavioural-record.json"
+        rel = f"docs/observations/{name}"
+        root = self.tree_with_record(
+            name, self.fixture_record("the menu opened only after the window was closed"))
+        status, result = self.diagnose(f"Evidence: {rel}.\n", [rel, BEHAVIOURAL_DEPENDS],
+                                       root=root)
+        self.assertEqual(status, 0)
+        self.assertEqual(result["records"], [rel])
 
 
 if __name__ == "__main__":

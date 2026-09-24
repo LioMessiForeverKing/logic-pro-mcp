@@ -40,7 +40,9 @@ WHAT IT REFUSES
  10  an index or absence file whose bytes are not the bytes `build` wrote, or an index row whose
       value is in no absence set -- a row whose value is not in the corpus was not taken from it
  11  a pull request body that neither cites nor may opt out (the opt-out is refused for a change
-      touching a Logic-facing path, and is not read from a code block or an HTML comment)
+      touching a Logic-facing path, and is not read from a code block or an HTML comment); such
+      a change may instead name a `canon_not_applicable` record it writes, bound to Logic-facing
+      code it changes
 
 WHAT IT DOES NOT CHECK, STATED RATHER THAN IMPLIED
 --------------------------------------------------
@@ -979,14 +981,265 @@ def check_labelsets_are_logic_facing(failures: list) -> None:
                         f"otherwise use the opt-out.")
 
 
-def _visible(body: str) -> str:
-    """The body with fenced code blocks and HTML comments removed.
+#: How GitHub's renderer (cmark-gfm) divides a body into blocks, as far as that decides what a
+#: reader is shown. Tabs are expanded to four columns first, so every pattern here sees spaces.
+_QUOTE = re.compile(r" {0,3}> ?")
+_LIST_ITEM = re.compile(r"( {0,3})([-+*]|(\d{1,9})[.)])( *)(.*)$")
+_FOOTNOTE = re.compile(r" {0,3}\[\^[^\]\s]+\]: *")
+_THEMATIC = re.compile(r" {0,3}(?:(?:\* *){3,}|(?:- *){3,}|(?:_ *){3,})$")
+_ATX = re.compile(r" {0,3}#{1,6}(?: |$)")
+_SETEXT = re.compile(r" {0,3}(?:=+|-+) *$")
+_FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)$")
+_TABLE_DELIMITER = re.compile(r" {0,3}\|? *:?-+:? *(?:\| *:?-+:? *)*\|? *$")
+_BLOCK_TAGS = (
+    "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|"
+    "dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|"
+    "hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|"
+    "search|section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul")
+_ATTRIBUTE = r"""(?:\s+[A-Za-z_:][\w.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)"""
+#: The HTML blocks that can interrupt a paragraph, each with what ends it (None: a blank line). A
+#: fence inside one is HTML, not a fence.
+_HTML_BLOCKS = (
+    (re.compile(r" {0,3}<(?:pre|script|style|textarea)(?:\s|>|$)", re.I),
+     re.compile(r"</(?:pre|script|style|textarea)>", re.I)),
+    (re.compile(r" {0,3}<!--"), re.compile(r"-->")),
+    (re.compile(r" {0,3}<\?"), re.compile(r"\?>")),
+    (re.compile(r" {0,3}<![A-Z]"), re.compile(r">")),
+    (re.compile(r" {0,3}<!\[CDATA\["), re.compile(r"\]\]>")),
+    (re.compile(r" {0,3}</?(?:%s)(?:\s|/?>|$)" % _BLOCK_TAGS, re.I), None),
+)
+#: A complete tag alone on its line opens an HTML block too, except inside a paragraph. Measured:
+#: a closing `</pre>` or `</textarea>` is one, although CommonMark's text excludes it.
+_HTML_BLOCK_ANY_TAG = re.compile(
+    r" {0,3}(?:<[A-Za-z][\w-]*%s*\s*/?>|</[A-Za-z][\w-]*\s*>)\s*$" % _ATTRIBUTE)
+#: What a browser shows nothing of in raw HTML: a comment, and `<?`, `<!` or `</` without a letter,
+#: which it reads as a comment ending at the next `>`.
+_RAW_HIDDEN = re.compile(r"<!--.*?-->|<(?:\?|!(?!--)|/(?![A-Za-z]))[^>]*(?:>|\Z)", re.S)
+#: The same in Markdown text, where each has to be complete to be HTML at all.
+_INLINE_HIDDEN = re.compile(r"<!--.*?-->|<\?.*?\?>|<![A-Z][^>]*>|<!\[CDATA\[.*?\]\]>", re.S)
+_RAW_PRE = re.compile(r"<pre(?=[\s/>]|\Z)", re.I)
+#: A link reference definition, `[label]: target "title"`. GitHub takes any number of them off the
+#: start of a paragraph and shows nothing of them, whether a link uses one or not. Measured: the
+#: target and the title may each be on the next line, and a title with more text after it is no
+#: title -- on the target's line that undoes the definition, on a line of its own it leaves that
+#: line as prose. It hides three shapes GitHub shows, all on the side of refusing: a bare target
+#: holding an unmatched `)`, a definition after a setext underline under definitions only, and a
+#: definition after the first on a lazy continuation line that begins with a space or a tab.
+_LINK_DEFINITION = re.compile(
+    r""" *\[(?!\s*\])(?:[^\\\[\]]|\\.)*\]: *(?:\n *)?(?:<[^<>\n]*>|[^ \n]+)"""
+    r"""(?:(?=[ \n]) *(?:\n *)?(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\)))?"""
+    r""" *(?:\n|\Z)""", re.S)
 
-    The opt-out sentence is a promise to a reader. Text a reader does not see cannot carry it, and
-    both hiding places were used against this check before it did this.
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _opens_fence(rest: str):
+    fence = _FENCE.match(rest)
+    if fence and not (fence.group(1)[0] == "`" and "`" in fence.group(2)):
+        return fence.group(1)[0], len(fence.group(1))
+    return None
+
+
+def _opens_html(rest: str, *, in_paragraph: bool):
+    """What ends the HTML block `rest` opens, None for a blank line, or False when it opens none."""
+    for start, end in _HTML_BLOCKS:
+        if start.match(rest):
+            return end
+    if not in_paragraph and _HTML_BLOCK_ANY_TAG.match(rest):
+        return None
+    return False
+
+
+def _interrupts_paragraph(rest: str) -> bool:
+    if _indent(rest) >= 4:
+        return False
+    return bool(_opens_fence(rest) or _ATX.match(rest) or _THEMATIC.match(rest)
+                or _FOOTNOTE.match(rest) or _opens_html(rest, in_paragraph=True) is not False)
+
+
+def _cells(row: str) -> int:
+    row = row.strip()
+    row = row[1:] if row.startswith("|") else row
+    row = row[:-1] if row.endswith("|") and not row.endswith("\\|") else row
+    return len(re.split(r"(?<!\\)\|", row))
+
+
+def _shown_blocks(text: str) -> list:
+    """The blocks of `text` a reader is shown as text, in order: [kind, lines].
+
+    The kind is "html", "table" for a table's rows and for its header with the lines above it, or
+    "text". A link definition at the start of "text" is not shown; GitHub reads none in a table.
+
+    Code is left out, and so is a footnote, which GitHub drops when nothing refers to it. Quotes,
+    list items and footnotes are followed as GitHub follows them, because they decide where a
+    fence opens and where it closes: a fence opened on a list item's own line, or closed by a line
+    its list item does not reach, was read the wrong way round when only indentation was counted.
     """
-    without_comments = re.sub(r"<!--.*?-->", " ", body, flags=re.S)
-    return re.sub(r"```.*?```", " ", without_comments, flags=re.S)
+    shown = []
+    stack = []  # open containers, outermost first: [kind, width, began_blank]
+    leaf = None  # None, "para", "table", "code", ("fence", char, length) or ("html", end)
+    header = ""  # a paragraph's last line, which a delimiter row under it makes a table header
+
+    def start(kind: str, rest: str) -> None:
+        shown.append([kind, [rest], any(entry[0] == "^" for entry in stack)])
+
+    for line in text.split("\n"):
+        rest, matched = line, 0
+        for container in stack:
+            kind, width = container[0], container[1]
+            if kind == ">":
+                quote = _QUOTE.match(rest)
+                if not quote:
+                    break
+                rest = rest[quote.end():]
+            elif not rest.strip():
+                if container[2]:
+                    break  # a list item may begin with one blank line, not two
+                rest = ""
+            elif _indent(rest) >= width:
+                rest, container[2] = rest[width:], False
+            else:
+                break
+            matched += 1
+        all_matched = matched == len(stack)
+        if all_matched and isinstance(leaf, tuple) and leaf[0] == "fence":
+            if re.fullmatch(r" {0,3}%s{%d,} *" % (re.escape(leaf[1]), leaf[2]), rest):
+                leaf = None
+            continue
+        if all_matched and isinstance(leaf, tuple) and leaf[0] == "html":
+            if leaf[1] is None and not rest.strip():
+                leaf = None
+                continue
+            if leaf[1] is not None and leaf[1].search(rest):
+                leaf = None
+            shown[-1][1].append(rest)
+            continue
+        if all_matched and leaf == "code":
+            if _indent(rest) >= 4:
+                continue
+            leaf = None
+        # Measured: a delimiter row indented four spaces is text, and `---|---` is one although a
+        # dash starts it, because only a dash with a space after it starts a list item.
+        item = _LIST_ITEM.match(rest)
+        if (all_matched and leaf == "para" and "-" in rest and _indent(rest) < 4
+                and _TABLE_DELIMITER.match(rest) and not (item and item.group(4))
+                and not _SETEXT.match(rest) and _cells(rest) == _cells(header)):
+            leaf = "table"
+            shown[-1][0] = "table"
+            continue
+
+        interrupting = all_matched and leaf == "para"
+        started = []
+        while _indent(rest) < 4:
+            quote = _QUOTE.match(rest)
+            if quote:
+                started.append([">", 0, False])
+                rest, interrupting = rest[quote.end():], False
+                continue
+            footnote = _FOOTNOTE.match(rest)
+            if footnote:
+                started.append(["^", 4, False])
+                rest, interrupting = rest[footnote.end():], False
+                continue
+            item = _LIST_ITEM.match(rest)
+            if not item or _THEMATIC.match(rest) or not (item.group(4) or not item.group(5)):
+                break
+            blank = not item.group(5)
+            if interrupting and (blank or (item.group(3) and int(item.group(3)) != 1)):
+                break
+            marker, spaces = len(item.group(1)) + len(item.group(2)), len(item.group(4))
+            if blank:
+                width, rest = marker + 1, ""
+            elif spaces >= 5:
+                width, rest = marker + 1, rest[marker + 1:]
+            else:
+                width, rest = marker + spaces, rest[marker + spaces:]
+            started.append(["-", width, blank])
+            interrupting = False
+        if started:
+            stack, leaf = stack[:matched] + started, None
+        elif not all_matched:
+            if (leaf == "para" and rest.strip() and not _interrupts_paragraph(rest)
+                    and _opens_html(rest, in_paragraph=False) is False):
+                shown[-1][1].append(rest)
+                header = rest
+                continue  # a lazy continuation line: the containers stay open
+            stack, leaf = stack[:matched], None
+
+        if not rest.strip():
+            if leaf in ("para", "table"):
+                leaf = None
+            continue
+        if leaf == "para":
+            if _SETEXT.match(rest):
+                leaf = None
+                continue
+            if not _interrupts_paragraph(rest):
+                shown[-1][1].append(rest)
+                header = rest
+                continue
+            leaf = None
+        in_table, leaf = leaf == "table", None
+        if _indent(rest) >= 4:
+            leaf = "code"
+            continue
+        fence = _opens_fence(rest)
+        if fence:
+            leaf = ("fence",) + fence
+            continue
+        end = _opens_html(rest, in_paragraph=False)
+        if end is not False:
+            if end is None or not end.search(rest):
+                leaf = ("html", end)
+            start("html", rest)
+            continue
+        start("table" if in_table else "text", rest)
+        if _ATX.match(rest) or _THEMATIC.match(rest):
+            leaf = None
+        elif in_table:
+            leaf = "table"  # a row is read on its own, and nothing continues it
+        else:
+            leaf, header = "para", rest
+    return [[kind, lines] for kind, lines, footnote in shown if not footnote]
+
+
+def _visible(body: str) -> str:
+    """The body as a reader is shown it: code, `<pre>`, comments, footnotes and link definitions out.
+
+    The opt-out sentence is a promise to a reader, and a named record is a claim to one. Text a
+    reader does not see, or sees as an example, cannot carry either, and both hiding places were
+    used against this check before it did this. Every doubt resolves toward hiding, because a line
+    hidden wrongly costs a refusal the contributor can read and a line shown wrongly is a way past
+    the check: everything after a raw `<pre>` is hidden, even one quoted in backticks, and so is
+    everything after a comment raw HTML leaves open, and a link definition is hidden even when a
+    link uses it. A link target written inline and an HTML attribute are read as text.
+    """
+    text = body.replace("\r\n", "\n").replace("\r", "\n").expandtabs(4)
+    kept = []
+    for kind, lines in _shown_blocks(text):
+        raw, stop = "\n".join(lines), False
+        definition = _LINK_DEFINITION.match(raw) if kind == "text" else None
+        while definition:
+            raw = raw[definition.end():]
+            definition = _LINK_DEFINITION.match(raw)
+        if kind == "html":
+            raw = _RAW_HIDDEN.sub(" ", raw)
+            # A comment raw HTML leaves open runs on until later raw HTML closes it, and this
+            # does not follow it that far: everything after it is hidden.
+            leaked = raw.find("<!--")
+            if leaked != -1:
+                raw, stop = raw[:leaked], True
+        pre = _RAW_PRE.search(raw)
+        if pre:
+            raw, stop = raw[:pre.start()], True
+        if kind != "html":
+            raw = _INLINE_HIDDEN.sub(" ", raw)
+        kept.append(raw)
+        if stop:
+            break
+    return "\n".join(kept)
 
 
 def logic_facing_exceptions() -> set:
@@ -1081,6 +1334,7 @@ INVALID_REFERENCE = "invalid_reference"
 MISSING_QUOTED_VALUE = "missing_quoted_value"
 UNRELATED_BINDING = "unrelated_binding"
 UNPROVED_EXCEPTIONS = "unproved_exceptions"
+BEHAVIOURAL_RECORD_REFUSED = "behavioural_record_refused"
 EMPTY_CHANGED_LIST = "empty_changed_list"
 INPUT_UNREADABLE = "input_unreadable"
 CHECKER_ERROR = "checker_error"
@@ -1102,15 +1356,19 @@ EXIT_FOR = {SATISFIED: 0, ACTIONABLE: 1, ERROR: 2}
 class Diagnosis:
     """What one evaluation of a body found: a category, and findings that carry a stable code."""
 
-    def __init__(self, category: str, findings=None, references: int = 0):
+    def __init__(self, category: str, findings=None, references: int = 0, records=None):
         self.category = category
         self.findings = list(findings or [])
         self.references = references
+        #: The behavioural records that satisfied a Logic-facing body with no citation. Empty for
+        #: every other outcome, including every issue body.
+        self.records = list(records or [])
 
     def as_dict(self) -> dict:
         return {
             "category": self.category,
             "references": self.references,
+            "records": list(self.records),
             "diagnostics": [{"code": code, "message": message}
                             for code, message in self.findings],
         }
@@ -1155,6 +1413,109 @@ def _require_readable_index(ref) -> None:
         canon.load_index(ref.source)
     except canon.CanonError as exc:
         raise CanonIndexUnavailable(f"{path} could not be read: {exc}") from exc
+
+
+#: A record path as a body names it: in prose, in inline backticks, or as a link target. Read only
+#: from `_visible(body)` -- a record named in a code block, a `<pre>`, a comment, a footnote or a
+#: link definition is an example or an aside, not a claim.
+_RECORD_NAMED = re.compile(r"(?<![\w.-])docs/observations/[\w.-]+\.json")
+
+OBSERVATIONS_PREFIX = "docs/observations/"
+
+
+def _observation_validator():
+    """`check-observation-records.py`, loaded from this tree the way `logic_canon` is.
+
+    Loaded when a body names a record rather than at import, so a checker run that never reaches
+    the record route does not depend on it. Without it this route restated the record schema and
+    passed records the validator refuses, a schema 4 one and one whose `depends` symbol does not
+    exist (review of #975).
+    """
+    path = os.path.join(REPO, "Scripts", "check-observation-records.py")
+    spec = importlib.util.spec_from_file_location("observation_records_for_guard", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _why_record_refused(rel: str, changed: set, touched: set, quoted: list):
+    """The first condition a named behavioural record fails, or None when it accepts the body.
+
+    A change whose evidence is BEHAVIOURAL -- what an element does, not what a string says -- has
+    no row of Apple's data to cite, and faking a label citation for it is the perfunctory evidence
+    this axis exists to end. The record category for that claim already exists (rule 13), so the
+    body may rest on one. Each condition closes a way to borrow somebody else's evidence: a record
+    this change does not write, a record that is not the category, a declaration rule 13 refuses,
+    a record about code this change does not touch, and a body that quotes a string Logic ships
+    while claiming nothing it says is a label.
+
+    The code has to be a Logic-facing file outside `docs/`, because the record stands in for the
+    citation that file's change owes. Any changed path used to count, so a record depending on the
+    roadmap let a change that edits no code through (review of #975).
+    """
+    if rel not in changed:
+        return ("it is not in this change's file list. The record has to be written or edited by "
+                "the change it is evidence for.")
+    path = os.path.join(REPO, rel)
+    if path not in observation_records():
+        return (f"no observation record exists at that path in this tree. Records are "
+                f"date-prefixed files under {OBSERVATIONS_PREFIX}.")
+    refusals = _observation_validator().check(path)
+    if refusals:
+        return f"check-observation-records.py refuses it: {refusals[0]}"
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            record = json.load(handle)
+    except (OSError, ValueError) as exc:
+        return f"it does not parse as JSON: {exc}"
+    if not isinstance(record, dict):
+        return "it is not a JSON object."
+    schema = record.get("schema", 1)
+    if not isinstance(schema, int) or schema < 3:
+        return f"it is at schema {schema!r}; a behavioural record is schema 3."
+    if "canon_not_applicable" not in record:
+        return ("it carries no `canon_not_applicable`. A record that cites or proves absence is "
+                "evidence about a label; cite that label here instead.")
+    failures: list = []
+    check_not_applicable(rel, record, canon.load_manifest(), failures)
+    if failures:
+        return f"rule 13 refuses its declaration: {failures[0]}"
+    depends = record.get("depends")
+    code_paths = [entry.split(":", 1)[0] for entry in (depends if isinstance(depends, list) else [])
+                  if isinstance(entry, str)]
+    if not any(path_ in touched and not path_.startswith("docs/") for path_ in code_paths):
+        return (f"none of its `depends` {code_paths} is Logic-facing code this change edits, "
+                f"outside docs/. A behavioural record is evidence for the code it depends on, "
+                f"and this change touches none of it.")
+    if quoted:
+        return (f"the body quotes {len(quoted)} string(s) the corpus holds, first "
+                f"{quoted[0][:50]!r}. A body quoting a string Logic ships is stating a label fact, "
+                f"and a label fact is cited, not carried by a behavioural record.")
+    return None
+
+
+def _behavioural_records(body: str, changed_paths, touched: list, label: str):
+    """A Diagnosis when the visible body names observation records, else None."""
+    named = sorted(set(_RECORD_NAMED.findall(_visible(body))))
+    if not named:
+        return None
+    changed = set(changed_paths or [])
+    quoted = _citable_strings_in(body)
+    accepted, refused = [], []
+    for rel in named:
+        why = _why_record_refused(rel, changed, set(touched), quoted)
+        if why is None:
+            accepted.append(rel)
+        else:
+            refused.append(f"  {rel}: {why}")
+    if accepted:
+        return Diagnosis(SATISFIED, records=accepted)
+    detail = "\n".join(refused)
+    return Diagnosis(ACTIONABLE, [(BEHAVIOURAL_RECORD_REFUSED, (
+        f"{label}: no canonical reference, and none of the {len(named)} behavioural record(s) "
+        f"this body names carries it. This change edits {len(touched)} Logic-facing file(s), "
+        f"first {touched[0]}.\n{detail}\n"
+        f"  See docs/canon/README.md."))])
 
 
 def diagnose_text(body: str, changed_paths=None, *, require_changed: bool = False,
@@ -1203,11 +1564,16 @@ def diagnose_text(body: str, changed_paths=None, *, require_changed: bool = Fals
     references = canon.find_refs(body)
     if not references:
         if touched:
+            behavioural = _behavioural_records(body, changed_paths, touched, label)
+            if behavioural is not None:
+                return behavioural
             return Diagnosis(ACTIONABLE, [(LOGIC_FACING_OPT_OUT, (
                 f"{label}: no canonical reference, and this change may not opt out: it edits "
                 f"{len(touched)} file(s)\n  whose contents are claims about Logic, first "
                 f"{touched[0]}.\n"
-                f"  Cite what those claims rest on. See docs/canon/README.md."))])
+                f"  Cite what those claims rest on. See docs/canon/README.md. A change whose "
+                f"evidence is behaviour, not a string, may instead name the schema-3 "
+                f"`canon_not_applicable` record it adds."))])
         if NO_FACT_OPT_OUT in _visible(body):
             # ...unless the body QUOTES something citable. The opt-out says "this states no fact
             # about Logic", and a body carrying a string Logic ships is stating one. This is the
@@ -1221,18 +1587,24 @@ def diagnose_text(body: str, changed_paths=None, *, require_changed: bool = Fals
                     f"  A body that quotes a string Logic ships is stating a fact about Logic. "
                     f"Cite it."))])
             return Diagnosis(SATISFIED)
-        # WHICH of the two is wrong decides what to say. A declaration typed into a code fence or
+        # WHICH of the two is wrong decides what to say. A declaration typed into a code block or
         # an HTML comment is a contributor who followed the instruction and got the rendering
         # wrong, and telling them "no opt-out" sends them to write a sentence they already wrote.
         # `_visible()` is NOT relaxed to accept it -- three earlier bypasses came out of that -- so
         # the repair is to name the place it is hiding.
         if NO_FACT_OPT_OUT in body:
             return Diagnosis(ACTIONABLE, [(HIDDEN_DECLARATION, (
-                f"{label}: the sentence {NO_FACT_OPT_OUT!r} is in this text, but only inside a "
-                f"code block or an\n"
-                f"  HTML comment, and those are deliberately not read -- a declaration that "
-                f"renders as an example\n"
-                f"  is not a declaration. Move it into ordinary visible prose, with the reason.")
+                f"{label}: the sentence {NO_FACT_OPT_OUT!r} is in this text, but only where a "
+                f"reader is not shown\n"
+                f"  it as prose, and that is deliberately not read -- a declaration that renders "
+                f"as an example is\n"
+                f"  not a declaration. Not read: a code block (a fence of backticks or tildes, "
+                f"closed or not, also\n"
+                f"  on a list item's own line, and text indented as code), an HTML comment, a "
+                f"footnote, a link\n"
+                f"  definition, and a `<pre>` with everything after it. Move it into ordinary "
+                f"visible prose, with\n"
+                f"  the reason.")
             )])
         return Diagnosis(ACTIONABLE, [(MISSING_DECLARATION, (
             f"{label}: no canonical reference, and no opt-out.\n"
@@ -1336,6 +1708,9 @@ def check_text(path: str, changed_paths=None, *, require_changed: bool = False,
     if diagnosis.category == SATISFIED:
         if diagnosis.references:
             print(f"{path}: {diagnosis.references} citation(s) resolved")
+        elif diagnosis.records:
+            print(f"{path}: no citation; satisfied by the behavioural record(s) "
+                  f"{', '.join(diagnosis.records)}")
         else:
             print(f"{path}: no citation, and it says so: {NO_FACT_OPT_OUT!r}")
         return EXIT_FOR[SATISFIED]

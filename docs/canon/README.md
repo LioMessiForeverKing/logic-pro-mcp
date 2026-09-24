@@ -31,8 +31,8 @@ find. The repository could not tell which, because it had no notion of a citatio
 
 ## If you are opening an issue or a pull request
 
-**What you have to provide.** One sentence, in the body, either citing Logic or saying you are not
-talking about it.
+**What you have to provide.** One sentence, in the body, citing Logic, naming the behavioural
+record the change rests on, or saying you are not talking about it.
 
 On an ISSUE that sentence is asked for, not required: nothing is blocked, nothing is closed, and
 you do not need a corpus build — or Logic — to report a problem. Open it with whatever evidence you
@@ -52,10 +52,25 @@ form below is what a pull request is gated on.
   Both halves are required. A reference alone does not say what you claimed it says, and a value
   alone is a string you typed.
 * Stating nothing about Logic: the sentence `This pull request body states no fact about Logic`
-  (`This issue body` on an issue), and the reason. It has to be visible prose — a sentence inside a
-  fenced code block or an HTML comment is deliberately not read, and the checker says so by name.
+  (`This issue body` on an issue), and the reason. It has to be visible prose — a sentence a
+  reader is shown only as code, or not at all, is deliberately not read, and the checker says so by
+  name. Not read: a code block (a fence of backticks or tildes, closed or not, a list item's own line
+  included, and text GitHub indents as code), an HTML comment, a footnote, a link definition
+  (`[label]: target "title"`, whether a link uses it or not), and a raw `<pre>`. The check follows
+  quotes and list items as GitHub does, and where it is unsure it hides: everything after a `<pre>`
+  is hidden, even one quoted in backticks, and so is everything after a comment an HTML block
+  leaves open. The target of an inline link and the inside of an HTML tag are read.
 * A change that touches a Logic-facing path cannot use the opt-out, whatever its description says.
   The prefixes are in `LOGIC-FACING.json` and the check derives this from the files, not the words.
+* Resting on Logic's BEHAVIOUR rather than a string it ships: name, in visible prose, the
+  `docs/observations/<name>.json` record that holds the measurement. The places the opt-out is not
+  read are not read here either, so a record named only as a link definition's target does not
+  count; write the path in the text or as an inline link. It stands in for a citation
+  only when this change adds or edits it, `check-observation-records.py` accepts it, it is a
+  schema 3 record declaring `canon_not_applicable` that rule 13 accepts, one of its `depends` is a
+  Logic-facing file outside `docs/` that this change also edits, and the body quotes no string the
+  corpus holds. Do not paste a label citation instead: a label citation establishes
+  what a label says, not what an element does when it is driven.
 
 **What the checker establishes.** That a reference resolves against bytes committed to this
 repository, and that a quoted value's digest matches Apple's at the pinned Logic build. Nothing
@@ -346,8 +361,14 @@ It is refused in two cases, both derived rather than declared:
 - the change edits a **Logic-facing path** (`Sources/LogicProMCP/{Accessibility,HostParameters,Channels}/`,
   `docs/{observations,locale,canon}/`, `Scripts/livekit/`) — what a change says about itself does
   not decide whether it states a fact about Logic; what it touches does;
-- the sentence appears only inside a fenced code block or an HTML comment. Text a reader does not
-  see cannot carry a promise, and both hiding places were used against this check before it looked.
+- the sentence appears only where a reader is not shown it as prose: a code block, an HTML
+  comment, a footnote, a link definition or a `<pre>`. Text a reader does not see, or sees as an
+  example, cannot carry a promise, and code blocks and comments were both used against this check
+  before it looked.
+
+A Logic-facing change that has nothing to cite because its evidence is behaviour does not need the
+opt-out: it names the `canon_not_applicable` record it adds, under the conditions given in *If you
+are opening an issue or a pull request*.
 
 ## The bindings — "was it actually used?"
 
