@@ -4936,6 +4936,30 @@ func testMixerNormalizedSliderReportsAnExactRail(start: Double, requested: Doubl
     #expect(try #require(obj["reached_exact"] as? Bool), "an exact rail was reported as not exact")
 }
 
+/// #973 review — the case that tells equality from rounding: a request for 0.9 clamps to the 1.0
+/// rail, which rounds to the same whole number, so only equality reports it as not exact.
+@Test func testMixerNormalizedSliderReportsARailPastTheRequestAsNotExact() async throws {
+    let builder = FakeAXRuntimeBuilder()
+    let app = builder.element(9890)
+    let window = builder.element(9891)
+    builder.setAttribute(app, kAXMainWindowAttribute as String, window)
+    let controls = attachTrackHeaderRail(
+        builder, window: window, siblings: [], baseID: 9_900,
+        volume: (value: 0.4, min: 0, max: 1),
+        pan: (value: 64, min: 0, max: 127)
+    )
+    let channel = makeAXBackedAccessibilityChannel(
+        builder: builder, app: app, logicRuntime: nudgeResponsiveLogicRuntime(builder, app: app)
+    )
+
+    let result = await channel.execute(operation: "mixer.set_volume", params: ["index": "0", "value": "0.9"])
+    let obj = decodeAccessibilityJSON(result.message)
+    #expect(headerRaw(builder, controls.volume) == 1.0)
+    #expect((obj["fine_steps"] as? NSNumber)?.intValue == 0)
+    let reachedExact = try #require(obj["reached_exact"] as? Bool)
+    #expect(!reachedExact, "a rail past the request was reported as exact")
+}
+
 /// #973 review — moving to the other side of the target at the same distance is a rounding tie,
 /// not a worse position, so the detent tolerance still decides the result.
 @Test func testMixerFinePhaseTreatsAnEqualDistanceMoveAsATie() async throws {
