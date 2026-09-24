@@ -4905,8 +4905,8 @@ func testMixerFinePhaseCoversADetentReversedOffARail(
     #expect(obj["state"] as? String == "B")
     #expect(obj["reason"] as? String == "readback_mismatch")
     #expect(obj["observed_raw"] is NSNull)
-    // Required first: measured here, `#expect((x as? String)?.contains(s) == true)` recorded no issue
-    // when x was nil, so the missing detail it was meant to catch passed.
+    // Required first: measured here, an expectation comparing an optional-chained `contains` with a
+    // Bool literal recorded no issue when the detail was nil, so the omission it was meant to catch passed.
     let detail = try #require(obj["reason_detail"] as? String, "a write seen moving away went unreported")
     #expect(detail.contains("the final read failed"))
     #expect((obj["fine_steps"] as? NSNumber)?.intValue == 1)
